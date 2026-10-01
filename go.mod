@@ -3,9 +3,9 @@ module github.com/zydou/herdr-screenshot
 go 1.25.8
 
 require (
-	github.com/beevik/etree v1.7.1
+	github.com/beevik/etree v1.8.1
 	github.com/charmbracelet/x/ansi v0.11.8
-	github.com/mattn/go-runewidth v0.0.28
+	github.com/mattn/go-runewidth v0.0.30
 	github.com/tetratelabs/wazero v1.12.0
 )
 
