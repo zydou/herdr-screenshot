@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLineCount(t *testing.T) {
 	tests := []struct {
@@ -65,5 +68,59 @@ func TestHeightFormula(t *testing.T) {
 	want := float64(10+int(16.8*float64(linesPlusOne))) * 4 * (16.0 / 14.0)
 	if imageHeight != want {
 		t.Errorf("height = %v, want %v", imageHeight, want)
+	}
+}
+
+// TestCsiMalformed never panics: a truncated colour form, an index past the
+// 256-colour palette, an RGB component past 255, and style escapes on a row past
+// the last line each used to index out of bounds and take the render down.
+func TestCsiMalformed(t *testing.T) {
+	inputs := []string{
+		"truncated 38\nx\x1b[38m\n",
+		"truncated 38;5\nx\x1b[38;5m\n",
+		"palette out of range\nx\x1b[38;5;999m\n",
+		"elided index\nx\x1b[38;5;m\n",
+		"truncated rgb\nx\x1b[38;2;1;2m\n",
+		"rgb out of range\nx\x1b[38;2;999;1;1m\n",
+		"background truncated\nx\x1b[48;5mX\n",
+		"background rgb truncated\nx\x1b[48;2;1mX\n",
+		"unknown subform\nx\x1b[38;1m\n",
+		"style past the last line\nx\n\x1b[1m",
+		"styled text past the last line\nx\n\x1b[31mX",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			if _, _, _, err := buildSVG(input); err != nil {
+				t.Errorf("buildSVG(%q): %v", input, err)
+			}
+		})
+	}
+}
+
+// TestCsiColours pins that the bounds checks still accept the colour forms a real
+// snapshot carries, so the fix above doesn't silently drop styling.
+func TestCsiColours(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"x\x1b[38;5;108my\n", `fill="#87af87"`},
+		{"x\x1b[48;5;176my\n", `fill="#d787d7"`},
+		{"x\x1b[38;5;246my\n", `fill="#949494"`},
+		{"x\x1b[38;2;255;128;0my\n", `fill="#ff8000"`},
+		{"x\x1b[48;2;255;128;0mz\n", `fill="#ff8000"`},
+		{"x\x1b[31my\n", `fill="#D74E6F"`},
+	}
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			doc, _, _, err := buildSVG(c.input)
+			if err != nil {
+				t.Fatalf("buildSVG(%q): %v", c.input, err)
+			}
+			svg, _ := doc.WriteToString()
+			if !strings.Contains(svg, c.want) {
+				t.Errorf("buildSVG(%q) missing %q", c.input, c.want)
+			}
+		})
 	}
 }

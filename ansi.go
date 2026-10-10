@@ -72,6 +72,15 @@ func (p *dispatcher) Execute(code byte) {
 
 const fontHeightToWidthRatio = 1.68
 
+// addChild attaches a styled span to the current line. A snapshot that ends in a
+// newline still parses style escapes for the row past the last one, so rows
+// outside the table are dropped instead of indexing out of range.
+func (p *dispatcher) addChild(el *etree.Element) {
+	if p.row < len(p.lines) {
+		p.lines[p.row].AddChild(el)
+	}
+}
+
 func (p *dispatcher) beginBackground(fill string) {
 	rect := etree.NewElement("rect")
 	rect.CreateAttr("fill", fill)
@@ -115,9 +124,7 @@ func (p *dispatcher) CsiDispatch(cmd ansi.Cmd, params ansi.Params) {
 		// reset ANSI, this is done by creating a new empty tspan,
 		// which would reset all the styles such that when text is appended to the last
 		// child of this line there is no styling applied.
-		if p.row < len(p.lines) {
-			p.lines[p.row].AddChild(span)
-		}
+		p.addChild(span)
 		p.endBackground()
 	}
 
@@ -135,52 +142,73 @@ func (p *dispatcher) CsiDispatch(cmd ansi.Cmd, params ansi.Params) {
 			reset()
 		case 1:
 			// span.CreateAttr("font-weight", "bold")
-			p.lines[p.row].AddChild(span)
+			p.addChild(span)
 		case 9:
 			span.CreateAttr("text-decoration", "line-through")
-			p.lines[p.row].AddChild(span)
+			p.addChild(span)
 		case 3:
 			span.CreateAttr("font-style", "italic")
-			p.lines[p.row].AddChild(span)
+			p.addChild(span)
 		case 4:
 			span.CreateAttr("text-decoration", "underline")
-			p.lines[p.row].AddChild(span)
+			p.addChild(span)
 		case 30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97:
 			span.CreateAttr("fill", ansiPalette[v])
-			p.lines[p.row].AddChild(span)
-		case 38:
-			i++
-			switch params[i] {
-			case 5:
-				n := params[i+1]
-				i++
-				fill := palette[n]
+			p.addChild(span)
+		case 38, 48:
+			fill, step, ok := colourAfter(params, i)
+			if !ok {
+				// a truncated or out-of-range colour form names no colour: drop the
+				// rest of the sequence rather than reading a missing sub-parameter as
+				// colour 0
+				return
+			}
+			if v == 48 {
+				p.endBackground()
+				p.beginBackground(fill)
+			} else {
 				span.CreateAttr("fill", fill)
-				p.lines[p.row].AddChild(span)
-			case 2:
-				span.CreateAttr("fill", fmt.Sprintf("#%02x%02x%02x", params[i+1], params[i+2], params[i+3]))
-				p.lines[p.row].AddChild(span)
-				i += 3
+				p.addChild(span)
 			}
-		case 48:
-			p.endBackground()
-			i++
-			switch params[i] {
-			case 5:
-				n := params[i+1]
-				i++
-				fill := palette[n]
-				p.beginBackground(fill)
-			case 2:
-				fill := fmt.Sprintf("#%02x%02x%02x", params[i+1], params[i+2], params[i+3])
-				p.beginBackground(fill)
-				i += 3
-			}
+			i += step - 1 // the loop's i++ below completes the step
 		case 100, 101, 102, 103, 104, 105, 106, 107:
 			p.beginBackground(ansiPalette[v])
 		}
 		i++
 	}
+}
+
+// paramAt reads the sub-parameter at i, or -1 when the sequence has no such
+// parameter. -1 doubles as the marker for a hole in the sequence, so a caller can
+// never read a missing or elided sub-parameter as colour 0.
+func paramAt(params ansi.Params, i int) int {
+	v, _, _ := params.Param(i, -1)
+	return v
+}
+
+// colourAfter reads the form that follows 38 (foreground) or 48 (background):
+// 38;5;n indexes the 256-colour palette, 38;2;r;g;b is a literal RGB colour. step
+// counts how many params the form consumes, from the 38/48 param itself. ok is
+// false when the sequence is truncated, names an index outside the palette, or
+// carries an RGB component past 255.
+func colourAfter(params ansi.Params, at int) (fill string, step int, ok bool) {
+	switch kind := paramAt(params, at+1); kind {
+	case 5:
+		n := paramAt(params, at+2)
+		if n < 0 || n >= len(palette) {
+			return "", 0, false
+		}
+		return palette[n], 3, true
+	case 2:
+		r := paramAt(params, at+2)
+		g := paramAt(params, at+3)
+		b := paramAt(params, at+4)
+		if r < 0 || g < 0 || b < 0 || r > 255 || g > 255 || b > 255 {
+			return "", 0, false
+		}
+		return fmt.Sprintf("#%02x%02x%02x", r, g, b), 5, true
+	}
+	return "", 0, false
 }
 
 var ansiPalette = map[int]string{
